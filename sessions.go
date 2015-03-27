@@ -52,6 +52,8 @@ type Options struct {
 
 // Session stores the values and optional configuration for a session.
 type Session interface {
+	// return session id
+	Id() string
 	// Get returns the session value associated to the given key.
 	Get(key interface{}) interface{}
 	// Set sets the session value associated to the given key.
@@ -103,6 +105,10 @@ type session struct {
 	store   Store
 	session *sessions.Session
 	written bool
+}
+
+func (s *session) Id() string {
+	return s.Session().ID
 }
 
 func (s *session) Get(key interface{}) interface{} {

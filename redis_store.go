@@ -1,8 +1,15 @@
 package sessions
 
 import (
+	"bytes"
+	"encoding/base32"
+	"encoding/gob"
 	"github.com/boj/redistore"
+	"github.com/garyburd/redigo/redis"
+	"github.com/gorilla/securecookie"
 	"github.com/gorilla/sessions"
+	"net/http"
+	"strings"
 )
 
 // RedisStore is an interface that represents a Cookie based storage
@@ -47,4 +54,60 @@ func (c *rediStore) Options(options Options) {
 		Secure:   options.Secure,
 		HttpOnly: options.HttpOnly,
 	}
+}
+
+// New returns a session for the given name without adding it to the registry.
+//
+// See gorilla/sessions FilesystemStore.New().
+func (s *rediStore) New(r *http.Request, name string) (*sessions.Session, error) {
+	var err error
+	session := sessions.NewSession(s, name)
+	// make a copy
+	options := *s.RediStore.Options
+	session.Options = &options
+	session.IsNew = true
+
+	var token string
+	if c, errCookie := r.Cookie(name); errCookie == nil {
+		token = c.Value
+	} else if v := r.URL.Query().Get(name); v != "" { // fetch from url query
+		token = v
+	} else if v := r.Header.Get(name); v != "" { // fetch from http header query
+		token = v
+	}
+
+	// decode id and load session
+	if token != "" {
+		err = securecookie.DecodeMulti(name, token, &session.ID, s.Codecs...)
+		if err == nil {
+			ok, err := s.load(session)
+			session.IsNew = !(err == nil && ok) // not new if no error and data available
+		}
+	}
+	if session.IsNew {
+		session.ID = strings.TrimRight(base32.StdEncoding.EncodeToString(securecookie.GenerateRandomKey(32)), "=")
+	}
+
+	return session, err
+}
+
+func (s *rediStore) load(session *sessions.Session) (bool, error) {
+	conn := s.Pool.Get()
+	defer conn.Close()
+	if err := conn.Err(); err != nil {
+		return false, err
+	}
+	data, err := conn.Do("GET", "session_"+session.ID)
+	if err != nil {
+		return false, err
+	}
+	if data == nil {
+		return false, nil // no data was associated with this key
+	}
+	b, err := redis.Bytes(data, err)
+	if err != nil {
+		return false, err
+	}
+	dec := gob.NewDecoder(bytes.NewBuffer(b))
+	return true, dec.Decode(&session.Values)
 }
